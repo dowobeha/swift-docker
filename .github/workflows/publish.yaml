@@ -1,0 +1,45 @@
+name: Build Swift Docker Images
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - 'Dockerfile' # Only build if Dockerfile changes
+  workflow_dispatch: # Allows manual trigger button
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      # 1. BUILD THE GRADER IMAGE (Slim)
+      - name: Build Grader Target
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          target: grader
+          push: true
+          # REPLACE 'dowobeha' with your actual Docker Hub username if different
+          tags: dowobeha/swift-docker:grader
+          platforms: linux/amd64
+
+      # 2. BUILD THE DEV IMAGE (VS Code Ready)
+      - name: Build Dev Target
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          target: dev
+          push: true
+          tags: dowobeha/swift-docker:dev
+          platforms: linux/amd64
