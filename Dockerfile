@@ -1,31 +1,40 @@
 # ==========================================
-# 1. HARVESTER: Extracts only essential binaries
+# 1. HARVESTER: Extracts binaries AND structure
 # ==========================================
-# We use the full 'noble' image to grab the tools we need
 FROM swift:noble as harvester
 WORKDIR /staging
-RUN mkdir -p bin lib/swift
 
-# A. Copy Core Toolchain (Compiler + Runtime)
-RUN cp -P /usr/bin/swift* /staging/bin/
-RUN cp -r /usr/lib/swift /staging/lib
+# Create the exact directory structure we need to preserve
+RUN mkdir -p usr/bin usr/lib/swift
 
-# B. Copy SourceKit-LSP (REQUIRED for VS Code Autocomplete)
-RUN cp -P /usr/bin/sourcekit-lsp /staging/bin/
+# A. Copy Binaries to /staging/usr/bin
+RUN cp -P /usr/bin/swift* usr/bin/
+RUN cp -P /usr/bin/sourcekit-lsp usr/bin/
 
-# C. Clean up heavy items we don't need in cloud/grading
-# (Removes LLDB, Docs, Package Manager caches to save ~500MB)
-RUN rm -f /staging/bin/lldb* \
-          /staging/bin/swift-lldb* \
-          /staging/bin/docc* \
-          /staging/bin/swift-help*
+# B. Copy Swift Runtime (The 'swift' folder) to /staging/usr/lib/swift
+RUN cp -r /usr/lib/swift/* usr/lib/swift/
+
+# C. Copy Compiler Internal Libs (THE FIX)
+# These live in /usr/lib/ in the base image, not inside /usr/lib/swift/
+# We copy them to /staging/usr/lib/ so the compiler can find them at runtime.
+RUN cp -P /usr/lib/libSwift*.so usr/lib/ || true
+RUN cp -P /usr/lib/lib_*.so usr/lib/ || true
+RUN cp -P /usr/lib/libsourcekit*.so usr/lib/ || true
+RUN cp -P /usr/lib/libdispatch*.so usr/lib/ || true
+RUN cp -P /usr/lib/libBlocks*.so usr/lib/ || true
+
+# D. Clean up bloat
+RUN rm -f usr/bin/lldb* \
+          usr/bin/swift-lldb* \
+          usr/bin/docc* \
+          usr/bin/swift-help*
 
 # ==========================================
 # 2. TARGET: GRADER (For PrairieLearn)
 # ==========================================
 FROM swift:noble-slim as grader
 
-# Runtime dependencies for swiftc + networking + terminal
+# Runtime dependencies
 RUN apt-get update && apt-get install -y \
     libsqlite3-0 libxml2 libz1 git \
     libncurses6 libtinfo6 \
@@ -33,12 +42,10 @@ RUN apt-get update && apt-get install -y \
     libpython3-stdlib \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy Toolchain (No SourceKit needed here - PL is text only)
-COPY --from=harvester /staging/bin/swift* /usr/bin/
-COPY --from=harvester /staging/lib/ /usr/lib/swift/
-
-# [FUTURE] This is where your custom grader tool will go
-# COPY --from=builder /build/.build/release/uaf-grader /usr/local/bin/uaf-grader
+# COPY THE WHOLE TREE (The Fix)
+# Instead of copying bin and lib separately, we overlay the /usr tree.
+# This ensures libs end up in /usr/lib and /usr/lib/swift exactly where expected.
+COPY --from=harvester /staging/usr/ /usr/
 
 RUN mkdir -p /grade/student /grade/tests /grade/results
 WORKDIR /grade
@@ -48,7 +55,7 @@ WORKDIR /grade
 # ==========================================
 FROM swift:noble-slim as dev
 
-# Install interactive tools students need + dependencies
+# Install interactive tools
 RUN apt-get update && apt-get install -y \
     curl git unzip vim nano \
     libsqlite3-0 libxml2 libz1 \
@@ -57,36 +64,28 @@ RUN apt-get update && apt-get install -y \
     libpython3-stdlib \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy Toolchain (+ SourceKit for Autocomplete)
-COPY --from=harvester /staging/bin/ /usr/bin/
-COPY --from=harvester /staging/lib/ /usr/lib/swift/
+# COPY THE WHOLE TREE (The Fix)
+COPY --from=harvester /staging/usr/ /usr/
 
-# [FUTURE] Copy your uaf-grader here too so students can self-check
-# COPY --from=builder /build/.build/release/uaf-grader /usr/local/bin/uaf-grader
-
-# --- USER SETUP (VS Code Friendly) ---
+# --- USER SETUP ---
 ARG USERNAME=vscode
 ARG USER_UID=1000
 ARG USER_GID=1000
 
-# 1. Handle UID 1000 Conflict (Ubuntu 24.04 has a user 'ubuntu' at 1000)
-# We remove it so we can cleanly create 'vscode' at UID 1000
+# 1. Handle UID 1000 Conflict
 RUN touch /var/mail/ubuntu && chown ubuntu /var/mail/ubuntu && userdel -r ubuntu
 
-# 2. Ensure the group exists
+# 2. Create User
 RUN groupadd --gid $USER_GID $USERNAME
-
-# 3. Create the user
 RUN useradd --uid $USER_UID --gid $USER_GID -m $USERNAME \
     && apt-get update && apt-get install -y sudo \
     && echo $USERNAME ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/$USERNAME \
     && chmod 0440 /etc/sudoers.d/$USERNAME
 
-# 4. Fix Ownership for SourceKit/Swift folders
+# 3. Fix Ownership
 RUN chown -R $USER_UID:$USER_GID /usr/lib/swift
 
 USER $USERNAME
 WORKDIR /home/$USERNAME
 
-# Verify install
 RUN swift --version
